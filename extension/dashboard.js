@@ -106,16 +106,8 @@ let selectedYear     = null;     // year filter for charts (null = All Time)
 const NON_USPSA_TYPES = new Set(['IDPA', 'IPSC', 'Steel Challenge', '3-Gun', 'PCSL', 'ICORE', 'SCSA']);
 function isLikelyUSPSA(matchType) { return !NON_USPSA_TYPES.has(matchType); }
 
-// True if a result should appear in charts — requires hit-factor scoring evidence for Unknown types.
-// Unknown matches whose names didn't trigger detection are excluded once scored without HF data
-// (e.g. Steel Challenge uses time scoring, not hit factor).
 function isChartable(r) {
-  const type = r.match_type || 'Unknown';
-  if (NON_USPSA_TYPES.has(type)) return false;
-  if (type === 'USPSA' || type === 'Hit Factor') return true;
-  // Unknown: if scored, require HF data to confirm hit-factor scoring; if unscored, leave enabled
-  if (r.overall_pct != null || r.hf != null) return r.hf != null;
-  return true;
+  return isLikelyUSPSA(r.match_type || 'Unknown');
 }
 
 // ── USPSA Classifier lookup ───────────────────────────────────────────────────
@@ -238,14 +230,27 @@ const USPSA_CLASSIFIERS = new Map([
   ['25-09', 'Descent Into Madness'],
 ]);
 
-// Returns { number, name } if the stage is a known classifier, or { number, name: null }
-// if the XX-YY pattern is present but not in the lookup table, or null if not a classifier.
-function isClassifierStage(stageName) {
-  const m = (stageName || '').match(/\b(\d{2}-\d{2})\b/);
+// Returns { number, name } if the stage is a known classifier, or null if not.
+// Checks stored match_def fields first (authoritative), then falls back to name pattern matching.
+function isClassifierStage(stage) {
+  // Accept either a stage object or a bare name string (backwards compat)
+  const stageName = typeof stage === 'string' ? stage : (stage?.name ?? '');
+
+  // 1. Authoritative: match_def.json told us explicitly
+  if (typeof stage === 'object' && stage !== null) {
+    if (stage.is_classifier === true || stage.classifier_code) {
+      const code = stage.classifier_code || null;
+      const name = code ? (USPSA_CLASSIFIERS.get(code) ?? null) : null;
+      return { number: code, name };
+    }
+    if (stage.is_classifier === false) return null;  // explicitly not a classifier
+  }
+
+  // 2. Fallback: extract XX-YY pattern from stage name
+  const m = stageName.match(/\b(\d{2}-\d{2})\b/);
   if (!m) return null;
   const num  = m[1];
   const name = USPSA_CLASSIFIERS.get(num) ?? null;
-  // Only treat as classifier if it's in the lookup table OR explicitly prefixed with "CM"
   if (name != null) return { number: num, name };
   if (/\bCM\b/i.test(stageName)) return { number: num, name: null };
   return null;
@@ -755,7 +760,7 @@ function renderMatchList() {
           </tr></thead>
           <tbody>
             ${match.stages.map(s => {
-              const clf = isClassifierStage(s.name);
+              const clf = isClassifierStage(s);
               const badge = clf
                 ? `<span class="classifier-badge" title="${clf.name ? clf.name + ' — ' : ''}CM ${clf.number}">CM ${clf.number}</span>`
                 : '';
@@ -1160,12 +1165,16 @@ function drawMultiSeriesChart(canvas, seriesArr, allDates, opts = {}) {
           const seriesLine = (canvas._hitMap || []).some(x => x.seriesLabel !== h.seriesLabel)
             ? `<div class="tt-meta" style="color:${h.color}">${h.seriesLabel}</div>` : '';
           const stagesHtml = (h.stages && h.stages.length > 0)
-            ? `<div class="tt-stages">${h.stages.map(s => `
+            ? `<div class="tt-stages">${h.stages.map(s => {
+                const clf = isClassifierStage(s);
+                const clfBadge = clf ? `<span class="classifier-badge" title="${clf.name ? clf.name + ' — ' : ''}CM ${clf.number}">CM ${clf.number}</span>` : '';
+                return `
                 <div class="tt-stage-row">
-                  <span class="tt-stage-name">${s.name}</span>
+                  <span class="tt-stage-name">${clfBadge}${s.name}</span>
                   <span class="tt-stage-hf">${s.hf != null ? s.hf.toFixed(4) : '—'}</span>
                   <span class="tt-stage-hits">${s.a ? '<span style="color:#4caf50">' + s.a + 'A</span> ' : ''}${s.c ? '<span style="color:#fdd835">' + s.c + 'C</span> ' : ''}${s.d ? '<span style="color:#ff9800">' + s.d + 'D</span>' : ''}${s.m ? ' <span style="color:#f44336;font-weight:600">' + s.m + 'M</span>' : ''}${s.ns ? ' <span style="color:#f44336;font-weight:600">' + s.ns + 'NS</span>' : ''}${s.p ? ' <span style="color:#f44336">' + s.p + 'P</span>' : ''}</span>
-                </div>`).join('')}</div>` : '';
+                </div>`;
+              }).join('')}</div>` : '';
           tooltipEl.innerHTML = `
             <div class="tt-name">${h.label}</div>
             <div class="tt-date">${h.date || ''}</div>
