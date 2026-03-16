@@ -106,6 +106,18 @@ let selectedYear     = null;     // year filter for charts (null = All Time)
 const NON_USPSA_TYPES = new Set(['IDPA', 'IPSC', 'Steel Challenge', '3-Gun', 'PCSL', 'ICORE', 'SCSA']);
 function isLikelyUSPSA(matchType) { return !NON_USPSA_TYPES.has(matchType); }
 
+// True if a result should appear in charts — requires hit-factor scoring evidence for Unknown types.
+// Unknown matches whose names didn't trigger detection are excluded once scored without HF data
+// (e.g. Steel Challenge uses time scoring, not hit factor).
+function isChartable(r) {
+  const type = r.match_type || 'Unknown';
+  if (NON_USPSA_TYPES.has(type)) return false;
+  if (type === 'USPSA' || type === 'Hit Factor') return true;
+  // Unknown: if scored, require HF data to confirm hit-factor scoring; if unscored, leave enabled
+  if (r.overall_pct != null || r.hf != null) return r.hf != null;
+  return true;
+}
+
 function saveDeselected() {
   chrome.storage.local.set({ deselectedMatches: [...deselectedMatches] });
 }
@@ -339,10 +351,10 @@ function renderYearFilter(years) {
 function renderAll() {
   if (!allResults.length) return;
 
-  // Level 2 USPSA filter: only chart matches with likely-USPSA type
+  // Level 2 filter: only chart USPSA/Hit Factor matches (excludes time-scored sports)
   // Also exclude matches the user has manually deselected
   const uspsaBase = allResults.filter(r =>
-    isLikelyUSPSA(r.match_type || 'Unknown') &&
+    isChartable(r) &&
     !deselectedMatches.has(r.match_id)
   );
 
@@ -547,7 +559,7 @@ function renderMatchList() {
   sorted.forEach(match => {
     const hasStages  = !!(match.stages && match.stages.length > 0);
     const matchType  = match.match_type || 'Unknown';
-    const isUSPSA    = isLikelyUSPSA(matchType);
+    const isUSPSA    = isChartable(match);
     const isDeselected = deselectedMatches.has(match.match_id);
     const isExcluded = !isUSPSA || isDeselected;
 
@@ -565,7 +577,7 @@ function renderMatchList() {
     if (hasStages) metaParts.push(`${match.stages.length} stages`);
     if (!isUSPSA) metaParts.push('excluded from charts');
 
-    const typeBadgeClass = !isLikelyUSPSA(matchType)              ? 'type-other'    // red  — non-USPSA sport
+    const typeBadgeClass = !isChartable(match)                    ? 'type-other'    // red  — non-USPSA/non-HF sport
                          : match.found_by === 'member_number'    ? 'type-uspsa'    // green — confirmed by member #
                          : 'type-unknown';                                          // orange — name-only or not found
 
